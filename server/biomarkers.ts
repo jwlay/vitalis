@@ -44,7 +44,7 @@ export const BIOMARKER_DB: BiomarkerInfo[] = [
     description: "Blood sugar level measured after fasting. A key indicator of metabolic health and diabetes risk.",
     relevance: "High fasting glucose indicates insulin resistance or diabetes. Optimal levels reflect efficient glucose metabolism and reduced risk of type 2 diabetes, cardiovascular disease, and cognitive decline.",
     researchNotes: "Studies show that keeping fasting glucose below 90 mg/dL is associated with significantly lower risk of type 2 diabetes. Even levels in the 100–125 mg/dL range (prediabetes) increase all-cause mortality risk by ~15%.",
-    aliases: ["fasting glucose", "blood glucose", "glucose fasting", "blutzucker", "glycemia", "BG", "FBG", "fasting blood sugar", "FBS"],
+    aliases: ["fasting glucose", "blood glucose", "glucose fasting", "glucose (fasting)", "fasting blood sugar", "blood sugar", "blutzucker", "glycemia", "BG", "FBG", "FBS", "glucose"],
     unitConversions: [
       { fromUnit: "mmol/L", factor: 18.02 },
       { fromUnit: "mg/dl", factor: 1 },
@@ -255,6 +255,8 @@ export const BIOMARKER_DB: BiomarkerInfo[] = [
       { fromUnit: "/μL", factor: 0.001 },
       { fromUnit: "×10⁹/L", factor: 1 },
       { fromUnit: "10^9/L", factor: 1 },
+      { fromUnit: "/cmm", factor: 0.001 },
+      { fromUnit: "cells/cmm", factor: 0.001 },
     ],
     referenceRanges: [
       { label: "Normal", gender: "all", low: 4.5, high: 11.0, optimalLow: 4.5, optimalHigh: 7.0 },
@@ -278,6 +280,8 @@ export const BIOMARKER_DB: BiomarkerInfo[] = [
       { fromUnit: "×10⁶/μL", factor: 1 },
       { fromUnit: "×10¹²/L", factor: 1 },
       { fromUnit: "10^12/L", factor: 1 },
+      { fromUnit: "million/cmm", factor: 1 },
+      { fromUnit: "mill/cmm", factor: 1 },
     ],
     referenceRanges: [
       { label: "Normal (Male)", gender: "male", low: 4.7, high: 6.1, optimalLow: 4.8, optimalHigh: 5.8 },
@@ -300,6 +304,8 @@ export const BIOMARKER_DB: BiomarkerInfo[] = [
       { fromUnit: "×10³/μL", factor: 1 },
       { fromUnit: "×10⁹/L", factor: 1 },
       { fromUnit: "10^9/L", factor: 1 },
+      { fromUnit: "/cmm", factor: 0.001 },
+      { fromUnit: "cells/cmm", factor: 0.001 },
     ],
     referenceRanges: [
       { label: "Normal", gender: "all", low: 150, high: 400, optimalLow: 150, optimalHigh: 350 },
@@ -763,104 +769,302 @@ export function getFlagStatus(
 }
 
 // Parse PDF text to extract biomarker readings
+// All known unit strings (normalised, lowercase, no spaces)
+const ALL_KNOWN_UNITS = new Set<string>();
+for (const b of BIOMARKER_DB) {
+  ALL_KNOWN_UNITS.add(b.canonicalUnit.toLowerCase().replace(/\s/g, ""));
+  for (const c of b.unitConversions) {
+    ALL_KNOWN_UNITS.add(c.fromUnit.toLowerCase().replace(/\s/g, ""));
+  }
+}
+
+/** Return true if tok looks like a lab unit */
+function looksLikeUnit(tok: string): boolean {
+  const t = tok.toLowerCase().replace(/\s/g, "");
+  if (ALL_KNOWN_UNITS.has(t)) return true;
+  // heuristic: contains % or / or starts with g or m or μ and is short
+  if (t.length <= 12 && (/[%\/]/.test(t) || /^[gmμunpfl]/.test(t))) return true;
+  return false;
+}
+
+/** Return true if tok is a pure number (allows comma as decimal separator) */
+function isNumericToken(tok: string): boolean {
+  return /^-?\d+([.,]\d+)?$/.test(tok);
+}
+
+/**
+ * Score a candidate value/unit pair for a given biomarker.
+ * Higher = better. Returns null if implausible.
+ */
+function scorePair(
+  val: number,
+  unit: string,
+  biomarker: BiomarkerInfo
+): number | null {
+  if (isNaN(val) || val < 0) return null;
+
+  const normUnit = unit.toLowerCase().replace(/\s/g, "");
+  const canonNorm = biomarker.canonicalUnit.toLowerCase().replace(/\s/g, "");
+
+  // Check exact unit match
+  const exactUnitMatch =
+    normUnit === canonNorm ||
+    biomarker.unitConversions.some(
+      (c) => c.fromUnit.toLowerCase().replace(/\s/g, "") === normUnit
+    );
+
+  // Check plausibility against reference ranges (wide margin)
+  let plausible = false;
+  for (const r of biomarker.referenceRanges) {
+    const lo = r.criticalLow ?? r.low ?? r.optimalLow ?? 0;
+    const hi = r.criticalHigh ?? r.high ?? r.optimalHigh ?? 1e9;
+    // Allow 5x outside range for unit-converted values
+    if (val >= lo * 0.05 && val <= hi * 5) {
+      plausible = true;
+      break;
+    }
+  }
+  if (biomarker.referenceRanges.length === 0) plausible = true;
+
+  let score = 0;
+  if (exactUnitMatch) score += 10;
+  if (plausible) score += 5;
+  if (unit && looksLikeUnit(unit)) score += 3;
+  if (!unit) score -= 2; // prefer values with units
+
+  // Negative score means very unlikely
+  return score >= 3 ? score : null;
+}
+
+/** Find all alias matches in a string, returning set of biomarker keys */
+function findAliasesInLine(
+  lowerClean: string,
+  sortedAliases: Array<[string, string]>
+): Set<string> {
+  const matchedKeys = new Set<string>();
+  for (const [alias, key] of sortedAliases) {
+    if (!lowerClean.includes(alias)) continue;
+    const idx = lowerClean.indexOf(alias);
+    const before = idx === 0 ? " " : lowerClean[idx - 1];
+    const after = idx + alias.length >= lowerClean.length ? " " : lowerClean[idx + alias.length];
+    const wordBefore = /[\s\(\[:,\-\/]/.test(before);
+    const wordAfter = /[\s\)\],:\.\-\/]/.test(after) || idx + alias.length >= lowerClean.length;
+    if (wordBefore && wordAfter) {
+      matchedKeys.add(key);
+    }
+  }
+  return matchedKeys;
+}
+
+/**
+ * Extract (value, unit) candidates from a segment of text.
+ * Strategy: scan each numeric token; grab adjacent unit if present.
+ */
+function extractCandidatesFromText(text: string): Array<{ val: number; unit: string }> {
+  const tokens = text.replace(/[\t:;|]+/g, " ").split(/\s+/).filter(Boolean);
+  const candidates: Array<{ val: number; unit: string }> = [];
+  for (let i = 0; i < tokens.length; i++) {
+    if (!isNumericToken(tokens[i])) continue;
+    const val = parseFloat(tokens[i].replace(",", "."));
+    if (isNaN(val)) continue;
+    const nextTok = tokens[i + 1] || "";
+    const prevTok = tokens[i - 1] || "";
+    if (looksLikeUnit(nextTok)) {
+      candidates.push({ val, unit: nextTok });
+    } else if (looksLikeUnit(prevTok)) {
+      candidates.push({ val, unit: prevTok });
+    } else {
+      candidates.push({ val, unit: "" });
+    }
+  }
+  return candidates;
+}
+
 export function parsePdfText(text: string): Array<{
   biomarkerKey: string;
   originalValue: number;
   originalUnit: string;
   date?: string;
 }> {
+  const found = new Map<string, { val: number; unit: string; score: number }>();
+
+  // Keep original lines (with tabs) for tab-split strategy
+  const rawLines = text.replace(/\r/g, "").split("\n");
+  // Also maintain normalised (tab→space) lines for alias matching
+  const lines = rawLines.map(l => l.replace(/\t/g, " "));
+
+  // ---- Pre-index alias lengths for longest-match priority ----
+  const sortedAliases = [...ALIAS_MAP.entries()].sort(
+    ([a], [b]) => b.length - a.length
+  );
+
+  // ----
+  // PASS 1: Single-line scan
+  // Handles: standard tabular format and sterling-accuris tab-split format
+  // ----
+  for (let lineIdx = 0; lineIdx < rawLines.length; lineIdx++) {
+    const rawOrig = rawLines[lineIdx]; // original with tabs
+    const raw = rawOrig.trim();
+    if (!raw || raw.length < 3) continue;
+
+    const clean = raw.replace(/\s+/g, " ");
+    const lowerClean = clean.toLowerCase();
+
+    const matchedKeys = findAliasesInLine(lowerClean, sortedAliases);
+    if (matchedKeys.size === 0) continue;
+
+    // Build candidate set
+    const candidates: Array<{ val: number; unit: string }> = [];
+
+    const tabIdx = rawOrig.indexOf("\t");
+    // Detect "reference range only" lines: "Name [H/L] unit N1 - N2" with no tab and no actual value
+    // Key: the line has ONLY 2 numeric tokens which form the reference range (no isolated measured value)
+    // Example: "SGPT U/L 0 - 50" (only 0 and 50) vs "Hemoglobin 15.1 g/dL 13.5 – 17.5" (15.1, 13.5, 17.5 = 3 tokens)
+    const allNumericTokens = raw.split(/\s+/).filter(t => /^-?\d+([.,]\d+)?$/.test(t));
+    const endsWithRange = /\d+[.,]?\d*\s*[-–]\s*\d+[.,]?\d*\s*$/.test(raw.trim());
+    // isRefRangeLine: no tab, ends with range, and has at most 2 numeric tokens (only the range values)
+    const isRefRangeLine = tabIdx === -1 && endsWithRange && allNumericTokens.length <= 2;
+
+    if (tabIdx !== -1) {
+      // Sterling-Accuris tab format: "Name unit refRange[TAB]Method VALUE"
+      // The part AFTER the tab contains the method + the actual measurement value
+      // The value is always the LAST numeric token after the tab
+      const afterTab = rawOrig.substring(tabIdx + 1).trim();
+      const beforeTab = rawOrig.substring(0, tabIdx).trim();
+
+      // Extract unit from the before-tab part (it's after the name, before the ref range)
+      const beforeTokens = beforeTab.split(/\s+/).filter(Boolean);
+      const unit = beforeTokens.find(t => looksLikeUnit(t)) || "";
+
+      // Last numeric token after tab = the measured value
+      const afterTokens = afterTab.split(/\s+/).filter(Boolean);
+      const lastNumTok = [...afterTokens].reverse().find(t => isNumericToken(t));
+      if (lastNumTok) {
+        const val = parseFloat(lastNumTok.replace(",", "."));
+        if (!isNaN(val)) {
+          candidates.push({ val, unit });
+        }
+      }
+      // Also add any candidates from the full line (lower priority)
+      candidates.push(...extractCandidatesFromText(clean));
+    } else if (!isRefRangeLine) {
+      // Standard format: scan entire line (skip ref-range-only lines)
+      candidates.push(...extractCandidatesFromText(clean));
+      // Also try last-token strategy (for lines like "Method 7.10")
+      const rawTokens = raw.split(/\s+/);
+      const lastNumTok = [...rawTokens].reverse().find(t => isNumericToken(t));
+      if (lastNumTok) {
+        const val = parseFloat(lastNumTok.replace(",", "."));
+        if (!isNaN(val)) {
+          const li = rawTokens.lastIndexOf(lastNumTok);
+          const nextU = rawTokens[li + 1] || "";
+          const prevU = rawTokens[li - 1] || "";
+          const unit = looksLikeUnit(nextU) ? nextU : looksLikeUnit(prevU) ? prevU : "";
+          candidates.push({ val, unit });
+        }
+      }
+    }
+    // If isRefRangeLine and no tab: leave candidates empty; Pass 2 lookahead will find the value
+
+    // Score & store best candidate per biomarker
+    for (const key of matchedKeys) {
+      const biomarker = BIOMARKER_MAP.get(key);
+      if (!biomarker) continue;
+
+      let best: { val: number; unit: string; score: number } | null = null;
+      for (const { val, unit } of candidates) {
+        const s = scorePair(val, unit, biomarker);
+        if (s !== null && (!best || s > best.score)) {
+          best = { val, unit, score: s };
+        }
+      }
+
+      if (best) {
+        const existing = found.get(key);
+        if (!existing || best.score > existing.score) {
+          found.set(key, best);
+        }
+      }
+    }
+  }
+
+  // ----
+  // PASS 2: Multi-line lookahead (up to 8 lines)
+  // Handles sterling-accuris multi-line format:
+  //   Line i: "HbA1c H % For Screening:"
+  //   Lines i+1..i+7: reference ranges (skipped)
+  //   Line i+k: "Method VALUE"  <- value line (ends with a number)
+  // ----
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i].trim();
+    if (!raw || raw.length < 3) continue;
+    const lowerClean = raw.replace(/\s+/g, " ").toLowerCase();
+
+    const matchedKeys = findAliasesInLine(lowerClean, sortedAliases);
+    if (matchedKeys.size === 0) continue;
+
+    // For each biomarker not yet found (or found with low score), look ahead
+    for (const key of matchedKeys) {
+      const existingScore = found.get(key)?.score ?? -999;
+      if (existingScore >= 15) continue; // already found with high confidence
+
+      const biomarker = BIOMARKER_MAP.get(key);
+      if (!biomarker) continue;
+
+      // Scan next 8 lines for a "method value" line
+      for (let j = i + 1; j < Math.min(i + 9, lines.length); j++) {
+        const vLine = lines[j].trim();
+        if (!vLine || vLine.length < 2) continue;
+
+        // Skip lines that are clearly reference range lines (range, threshold, percentage range)
+        if (/\d+[.,]?\d*\s*[-–]\s*\d+[.,]?\d*/.test(vLine) && !vLine.includes("\t")) continue;
+        // Skip threshold lines like "> 7.0 %" or "< 100" (reference boundaries)
+        if (/^[<>]\s*\d+/.test(vLine) || /:\s*[<>]\s*\d+/.test(vLine)) continue;
+        // Skip lines that only contain a percentage range like "5.7% -" or "6.4%"
+        if (/^\d+[.,]?\d*%?\s*[-–]?\s*$/.test(vLine)) continue;
+        // Skip narrative/explanatory lines (bullet points, long sentences, >70 chars with no tab)
+        if (vLine.startsWith("•") || vLine.startsWith("-") || (vLine.length > 70 && !vLine.includes("\t") && /\s[a-zA-Z]{4,}\s/.test(vLine))) continue;
+        // Skip pure reference/threshold description lines (no tab, only keywords + numbers)
+        if (!vLine.includes("\t") && /^(near|borderline|optimal|very high|poor control|good control|for screening|for diabetic|non-diab|desirable|high:|low:|borderline high)/i.test(vLine)) continue;
+        // Stop at page markers or completely new sections
+        if (/^(page|--\s*\d+\s*of|test result|explanation|reference|erythrocyte|lipid profile|biochemistry|haematology|complete blood)/i.test(vLine)) break;
+
+        const vTokens = vLine.split(/\s+/).filter(Boolean);
+        const lastNum = [...vTokens].reverse().find(t => isNumericToken(t));
+        if (!lastNum) continue;
+
+        const val = parseFloat(lastNum.replace(",", "."));
+        if (isNaN(val)) continue;
+
+        const li = vTokens.lastIndexOf(lastNum);
+        const nextU = vTokens[li + 1] || "";
+        const prevU = vTokens[li - 1] || "";
+        const unit = looksLikeUnit(nextU) ? nextU : looksLikeUnit(prevU) ? prevU : "";
+
+        const s = scorePair(val, unit, biomarker);
+        if (s !== null && s > existingScore) {
+          found.set(key, { val, unit, score: s });
+        }
+        // Stop at first line that has a scoreable number
+        if (s !== null) break;
+      }
+    }
+  }
+
+  // ---- Build result array ----
   const results: Array<{
     biomarkerKey: string;
     originalValue: number;
     originalUnit: string;
-    date?: string;
   }> = [];
 
-  const lines = text.split(/\n/);
-  
-  // Extract date from PDF
-  let testDate: string | undefined;
-  const datePatterns = [
-    /\b(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})\b/,
-    /\b(\d{4})[\/\-\.](\d{1,2})[\/\-\.](\d{1,2})\b/,
-    /\b(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{4})\b/i,
-  ];
-
-  // Value extraction: look for patterns like "Glucose 95 mg/dL" or "LDL: 120 mg/dL"
-  const numberPattern = /(-?\d+(?:\.\d+)?(?:[,]\d+)?)\s*([a-zA-Z%\/\^²³μ·×⁰¹²³⁴⁵⁶⁷⁸⁹\(\)\.]+)?/;
-
-  // Common patterns for lab results
-  const labLinePatterns = [
-    // "Analyte Name    Value    Unit    Ref Range"
-    /^(.+?)\s{2,}(\d+(?:[.,]\d+)?)\s+([^\s]+(?:\/[^\s]+)?)/,
-    // "Analyte Name: Value Unit"
-    /^(.+?):\s*(\d+(?:[.,]\d+)?)\s+([^\s]+(?:\/[^\s]+)?)/,
-    // "Analyte Name Value Unit Reference"
-    /^(.+?)\s+(\d+(?:[.,]\d+)?)\s+([a-zA-Z%\/μ]+)/,
-  ];
-
-  for (const line of lines) {
-    const cleanLine = line.trim().replace(/\s+/g, " ");
-    if (!cleanLine || cleanLine.length < 3) continue;
-
-    // Try to extract date
-    if (!testDate) {
-      for (const dp of datePatterns) {
-        const m = cleanLine.match(dp);
-        if (m) {
-          testDate = m[0];
-          break;
-        }
-      }
-    }
-
-    // Try each alias in the biomarker database
-    for (const [alias, key] of ALIAS_MAP) {
-      // Case-insensitive check if line contains this alias
-      const lowerLine = cleanLine.toLowerCase();
-      if (!lowerLine.includes(alias.toLowerCase())) continue;
-
-      // Find the numeric value near this alias
-      // Search for numbers in this line
-      const numMatches = [...cleanLine.matchAll(/(\d+(?:[.,]\d+)?)\s*([^\d\s,;|<>]+)?/g)];
-      
-      for (const numMatch of numMatches) {
-        const rawVal = numMatch[1].replace(",", ".");
-        const val = parseFloat(rawVal);
-        if (isNaN(val) || val === 0) continue;
-        
-        const unit = (numMatch[2] || "").trim();
-        
-        // Sanity check: value must be plausible for this biomarker
-        const biomarker = BIOMARKER_MAP.get(key);
-        if (!biomarker) continue;
-        
-        // Check unit makes sense
-        const hasKnownUnit = biomarker.unitConversions.some(
-          (c) => c.fromUnit.toLowerCase().replace(/\s/g, "") === unit.toLowerCase().replace(/\s/g, "")
-        ) || biomarker.canonicalUnit.toLowerCase().replace(/\s/g, "") === unit.toLowerCase().replace(/\s/g, "");
-        
-        if (unit && !hasKnownUnit) {
-          // Try without unit if no unit match
-          // Still add as a candidate if no unit, will try to guess
-        }
-
-        // Avoid duplicate entries for the same biomarker key
-        const existing = results.find((r) => r.biomarkerKey === key);
-        if (!existing) {
-          results.push({
-            biomarkerKey: key,
-            originalValue: val,
-            originalUnit: unit || biomarker.canonicalUnit,
-            date: testDate,
-          });
-        }
-        break;
-      }
-
-      // Once we found a match for this alias, move to next line
-      if (results.some((r) => r.biomarkerKey === key)) break;
-    }
+  for (const [key, { val, unit }] of found) {
+    const biomarker = BIOMARKER_MAP.get(key)!;
+    results.push({
+      biomarkerKey: key,
+      originalValue: val,
+      originalUnit: unit || biomarker.canonicalUnit,
+    });
   }
 
   return results;

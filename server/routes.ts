@@ -1,21 +1,23 @@
 import type { Express } from "express";
 import type { Server } from "http";
 import multer from "multer";
-// pdf-parse: use dynamic import to work in both ESM dev and CJS production builds
-let pdfParse: any;
-try {
-  // In CJS build, import.meta is unavailable; use native require
-  pdfParse = require("pdf-parse");
-} catch {
-  // If require not defined (ESM context), will be assigned lazily
-  pdfParse = null;
-}
 
-async function getPdfParse() {
-  if (pdfParse) return pdfParse;
-  const mod = await import("pdf-parse");
-  pdfParse = mod.default || mod;
-  return pdfParse;
+// pdf-parse v2: use PDFParse class with { data: buffer } constructor
+// Works in both ESM (dev) and CJS (production) contexts via dynamic require/import
+async function parsePdfBuffer(buffer: Buffer): Promise<string> {
+  let mod: any;
+  try {
+    // In CJS production build, native require is available
+    mod = require("pdf-parse");
+  } catch {
+    // In ESM dev context, use dynamic import
+    mod = await import("pdf-parse");
+    mod = mod.default || mod;
+  }
+  const { PDFParse } = mod;
+  const parser = new PDFParse({ data: buffer });
+  const result = await parser.getText();
+  return result.text || "";
 }
 import { storage } from "./storage";
 import { insertProfileSchema, insertBloodTestSchema } from "@shared/schema";
@@ -125,9 +127,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       // Parse PDF
       let pdfText = "";
       try {
-        const parser = await getPdfParse();
-        const pdfData = await parser(req.file.buffer);
-        pdfText = pdfData.text;
+        pdfText = await parsePdfBuffer(req.file.buffer);
       } catch (e) {
         return res.status(400).json({ error: "Failed to parse PDF. Please ensure it is a valid, text-based PDF." });
       }
@@ -316,9 +316,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
       let pdfText = "";
       try {
-        const parser = await getPdfParse();
-        const pdfData = await parser(req.file.buffer);
-        pdfText = pdfData.text;
+        pdfText = await parsePdfBuffer(req.file.buffer);
       } catch (e) {
         return res.status(400).json({ error: "Failed to parse PDF" });
       }

@@ -12,7 +12,9 @@ export interface BiomarkerInfo {
   researchNotes: string;
   aliases: string[]; // alternate names/spellings to match in PDFs
   referenceRanges: ReferenceRange[];
+  referenceSets?: ReferenceSet[];   // named clinical reference sets
   unitConversions: UnitConversion[];
+  alternateUnits?: AlternateUnit[]; // display units the user can switch to
 }
 
 export interface ReferenceRange {
@@ -26,6 +28,23 @@ export interface ReferenceRange {
   optimalHigh?: number;
   criticalLow?: number;
   criticalHigh?: number;
+}
+
+/** A named collection of thresholds drawn from a specific guideline / population */
+export interface ReferenceSet {
+  id: string;        // e.g. "clinical", "age_matched_35m", "athletic", "longevity"
+  label: string;     // Display name shown in UI selector
+  description: string; // 1-sentence explanation of the set
+  source: string;    // Guideline / study citation
+  sourceUrl?: string;
+  ranges: ReferenceRange[];
+}
+
+/** An alternative unit that can be displayed alongside the canonical unit */
+export interface AlternateUnit {
+  unit: string;          // display unit string, e.g. "mmol/L"
+  factor: number;        // multiply canonical value by this to get display value
+  precision?: number;    // decimal places to show
 }
 
 export interface UnitConversion {
@@ -50,12 +69,57 @@ export const BIOMARKER_DB: BiomarkerInfo[] = [
       { fromUnit: "mg/dl", factor: 1 },
       { fromUnit: "mg/dL", factor: 1 },
     ],
+    alternateUnits: [
+      { unit: "mmol/L", factor: 1 / 18.02, precision: 2 },
+    ],
     referenceRanges: [
       { label: "Optimal", gender: "all", optimalLow: 70, optimalHigh: 90 },
       { label: "Normal", gender: "all", low: 70, high: 99 },
       { label: "Prediabetes", gender: "all", low: 100, high: 125 },
       { label: "Critical Low", gender: "all", criticalLow: 55 },
       { label: "Critical High", gender: "all", criticalHigh: 200 },
+    ],
+    referenceSets: [
+      {
+        id: "clinical",
+        label: "Clinical Standard (ADA)",
+        description: "Standard diagnostic criteria used by most clinicians worldwide.",
+        source: "American Diabetes Association Standards of Medical Care, 2023",
+        sourceUrl: "https://diabetesjournals.org/care/issue/46/Supplement_1",
+        ranges: [
+          { label: "Optimal", gender: "all", optimalLow: 70, optimalHigh: 90 },
+          { label: "Normal", gender: "all", low: 70, high: 99 },
+          { label: "Prediabetes", gender: "all", low: 100, high: 125 },
+          { label: "Critical Low", gender: "all", criticalLow: 55 },
+          { label: "Critical High", gender: "all", criticalHigh: 200 },
+        ],
+      },
+      {
+        id: "longevity",
+        label: "Optimal Longevity",
+        description: "Tighter targets associated with lowest long-term cardiometabolic risk in large cohort studies.",
+        source: "Emerging longevity medicine guidelines; Attia P. Outlive, 2023; NHANES cohort data",
+        ranges: [
+          { label: "Optimal", gender: "all", optimalLow: 72, optimalHigh: 85 },
+          { label: "Acceptable", gender: "all", low: 72, high: 94 },
+          { label: "Borderline", gender: "all", low: 95, high: 109 },
+          { label: "Critical Low", gender: "all", criticalLow: 60 },
+          { label: "Critical High", gender: "all", criticalHigh: 126 },
+        ],
+      },
+      {
+        id: "athletic",
+        label: "Athletic / Active",
+        description: "Reference ranges observed in trained athletes; slightly lower fasting glucose is common due to high insulin sensitivity.",
+        source: "Sports medicine literature; Marliss & Vranic, Diabetes 2002",
+        ranges: [
+          { label: "Optimal", gender: "all", optimalLow: 65, optimalHigh: 88 },
+          { label: "Normal", gender: "all", low: 65, high: 95 },
+          { label: "Borderline", gender: "all", low: 96, high: 115 },
+          { label: "Critical Low", gender: "all", criticalLow: 55 },
+          { label: "Critical High", gender: "all", criticalHigh: 180 },
+        ],
+      },
     ],
   },
   {
@@ -77,6 +141,46 @@ export const BIOMARKER_DB: BiomarkerInfo[] = [
       { label: "Normal", gender: "all", low: 4.0, high: 5.6 },
       { label: "Prediabetes", gender: "all", low: 5.7, high: 6.4 },
       { label: "Diabetes threshold", gender: "all", criticalHigh: 6.5 },
+    ],
+    referenceSets: [
+      {
+        id: "clinical",
+        label: "Clinical Standard (ADA)",
+        description: "Widely used diagnostic cut-points from the American Diabetes Association.",
+        source: "ADA Standards of Medical Care in Diabetes, 2023",
+        sourceUrl: "https://diabetesjournals.org/care/issue/46/Supplement_1",
+        ranges: [
+          { label: "Optimal", gender: "all", optimalLow: 4.0, optimalHigh: 5.6 },
+          { label: "Normal", gender: "all", low: 4.0, high: 5.6 },
+          { label: "Prediabetes", gender: "all", low: 5.7, high: 6.4 },
+          { label: "Diabetes", gender: "all", criticalHigh: 6.5 },
+        ],
+      },
+      {
+        id: "longevity",
+        label: "Optimal Longevity",
+        description: "Tighter targets for lowest all-cause mortality and cardiovascular risk based on cohort studies.",
+        source: "Selvin et al. NEJM 2010; Attia P. Outlive, 2023",
+        sourceUrl: "https://www.nejm.org/doi/full/10.1056/NEJMoa1007792",
+        ranges: [
+          { label: "Optimal", gender: "all", optimalLow: 4.5, optimalHigh: 5.3 },
+          { label: "Acceptable", gender: "all", low: 4.5, high: 5.5 },
+          { label: "Elevated Risk", gender: "all", low: 5.6, high: 6.2 },
+          { label: "High Risk", gender: "all", criticalHigh: 6.3 },
+        ],
+      },
+      {
+        id: "athletic",
+        label: "Athletic / Active",
+        description: "Values typically observed in well-trained endurance athletes with high insulin sensitivity.",
+        source: "Adamopoulos S et al. EJHF 2011; general sports medicine data",
+        ranges: [
+          { label: "Optimal", gender: "all", optimalLow: 4.4, optimalHigh: 5.4 },
+          { label: "Normal", gender: "all", low: 4.4, high: 5.6 },
+          { label: "Borderline", gender: "all", low: 5.7, high: 6.4 },
+          { label: "Critical High", gender: "all", criticalHigh: 6.5 },
+        ],
+      },
     ],
   },
   {
@@ -118,11 +222,40 @@ export const BIOMARKER_DB: BiomarkerInfo[] = [
       { fromUnit: "mg/dL", factor: 1 },
       { fromUnit: "mg/dl", factor: 1 },
     ],
+    alternateUnits: [
+      { unit: "mmol/L", factor: 1 / 38.67, precision: 2 },
+    ],
     referenceRanges: [
       { label: "Optimal", gender: "all", optimalLow: 150, optimalHigh: 200 },
       { label: "Desirable", gender: "all", low: 0, high: 200 },
       { label: "Borderline", gender: "all", low: 200, high: 239 },
       { label: "High", gender: "all", criticalHigh: 240 },
+    ],
+    referenceSets: [
+      {
+        id: "clinical",
+        label: "Clinical Standard (NCEP ATP III)",
+        description: "NCEP ATP III guidelines used in most clinical labs worldwide.",
+        source: "NCEP ATP III Guidelines, JAMA 2001; ACC/AHA 2019 Cholesterol Guidelines",
+        sourceUrl: "https://www.ahajournals.org/doi/10.1161/CIR.0000000000000625",
+        ranges: [
+          { label: "Desirable", gender: "all", optimalLow: 150, optimalHigh: 200 },
+          { label: "Borderline High", gender: "all", low: 200, high: 239 },
+          { label: "High", gender: "all", criticalHigh: 240 },
+        ],
+      },
+      {
+        id: "longevity",
+        label: "Optimal Longevity",
+        description: "Lower targets associated with reduced long-term ASCVD risk in observational studies.",
+        source: "Ference BA et al. JACC 2017; Ravnskov et al. BMJ Evidence 2016",
+        ranges: [
+          { label: "Optimal", gender: "all", optimalLow: 140, optimalHigh: 185 },
+          { label: "Acceptable", gender: "all", low: 140, high: 210 },
+          { label: "Borderline", gender: "all", low: 210, high: 249 },
+          { label: "High", gender: "all", criticalHigh: 250 },
+        ],
+      },
     ],
   },
   {
@@ -140,12 +273,57 @@ export const BIOMARKER_DB: BiomarkerInfo[] = [
       { fromUnit: "mg/dL", factor: 1 },
       { fromUnit: "mg/dl", factor: 1 },
     ],
+    alternateUnits: [
+      { unit: "mmol/L", factor: 1 / 38.67, precision: 2 },
+    ],
     referenceRanges: [
       { label: "Optimal", gender: "all", optimalLow: 0, optimalHigh: 100 },
       { label: "Near Optimal", gender: "all", low: 100, high: 129 },
       { label: "Borderline", gender: "all", low: 130, high: 159 },
       { label: "High", gender: "all", low: 160, high: 189 },
       { label: "Very High", gender: "all", criticalHigh: 190 },
+    ],
+    referenceSets: [
+      {
+        id: "clinical",
+        label: "Clinical Standard (ACC/AHA)",
+        description: "Standard risk categories from the American College of Cardiology / American Heart Association 2019 guidelines.",
+        source: "ACC/AHA 2019 Guideline on the Primary Prevention of Cardiovascular Disease",
+        sourceUrl: "https://www.ahajournals.org/doi/10.1161/CIR.0000000000000678",
+        ranges: [
+          { label: "Optimal", gender: "all", optimalLow: 0, optimalHigh: 100 },
+          { label: "Near Optimal", gender: "all", low: 100, high: 129 },
+          { label: "Borderline High", gender: "all", low: 130, high: 159 },
+          { label: "High", gender: "all", low: 160, high: 189 },
+          { label: "Very High", gender: "all", criticalHigh: 190 },
+        ],
+      },
+      {
+        id: "longevity",
+        label: "Optimal Longevity",
+        description: "Lower targets linked to minimal atherosclerotic progression in lifetime exposure studies.",
+        source: "Ference BA et al. JACC 2017; Attia P. Outlive, 2023; MESA Study",
+        sourceUrl: "https://www.jacc.org/doi/10.1016/j.jacc.2017.02.001",
+        ranges: [
+          { label: "Optimal", gender: "all", optimalLow: 0, optimalHigh: 70 },
+          { label: "Acceptable", gender: "all", low: 70, high: 99 },
+          { label: "Borderline", gender: "all", low: 100, high: 129 },
+          { label: "Elevated", gender: "all", low: 130, high: 159 },
+          { label: "Very High", gender: "all", criticalHigh: 160 },
+        ],
+      },
+      {
+        id: "athletic",
+        label: "Athletic / Active",
+        description: "LDL in fit individuals with high HDL and low TG; cardiovascular risk is context-dependent.",
+        source: "Franklin et al. JACC 2018; Eijsvogels & Thompson, 2015",
+        ranges: [
+          { label: "Optimal", gender: "all", optimalLow: 0, optimalHigh: 110 },
+          { label: "Acceptable", gender: "all", low: 110, high: 139 },
+          { label: "Borderline", gender: "all", low: 140, high: 169 },
+          { label: "High", gender: "all", criticalHigh: 170 },
+        ],
+      },
     ],
   },
   {
@@ -163,6 +341,9 @@ export const BIOMARKER_DB: BiomarkerInfo[] = [
       { fromUnit: "mg/dL", factor: 1 },
       { fromUnit: "mg/dl", factor: 1 },
     ],
+    alternateUnits: [
+      { unit: "mmol/L", factor: 1 / 38.67, precision: 2 },
+    ],
     referenceRanges: [
       { label: "Risk Factor (Low)", gender: "male", criticalLow: 40 },
       { label: "Risk Factor (Low)", gender: "female", criticalLow: 50 },
@@ -170,6 +351,38 @@ export const BIOMARKER_DB: BiomarkerInfo[] = [
       { label: "Optimal (Female)", gender: "female", optimalLow: 65, optimalHigh: 90 },
       { label: "Normal (Male)", gender: "male", low: 40, high: 1000 },
       { label: "Normal (Female)", gender: "female", low: 50, high: 1000 },
+    ],
+    referenceSets: [
+      {
+        id: "clinical",
+        label: "Clinical Standard (ACC/AHA)",
+        description: "Standard HDL risk thresholds from ACC/AHA guidelines.",
+        source: "ACC/AHA 2019 Guideline on the Primary Prevention of Cardiovascular Disease",
+        sourceUrl: "https://www.ahajournals.org/doi/10.1161/CIR.0000000000000678",
+        ranges: [
+          { label: "Risk Factor (Low)", gender: "male", criticalLow: 40 },
+          { label: "Risk Factor (Low)", gender: "female", criticalLow: 50 },
+          { label: "Optimal (Male)", gender: "male", optimalLow: 60, optimalHigh: 80 },
+          { label: "Optimal (Female)", gender: "female", optimalLow: 65, optimalHigh: 90 },
+          { label: "Normal (Male)", gender: "male", low: 40, high: 1000 },
+          { label: "Normal (Female)", gender: "female", low: 50, high: 1000 },
+        ],
+      },
+      {
+        id: "athletic",
+        label: "Athletic / Active",
+        description: "Aerobic exercise raises HDL 5–10%; higher targets expected in trained individuals.",
+        source: "Kodama et al. Archives of Internal Medicine 2007 (meta-analysis)",
+        sourceUrl: "https://jamanetwork.com/journals/jamainternalmedicine/fullarticle/413187",
+        ranges: [
+          { label: "Risk Factor (Low)", gender: "male", criticalLow: 45 },
+          { label: "Risk Factor (Low)", gender: "female", criticalLow: 55 },
+          { label: "Optimal (Male)", gender: "male", optimalLow: 65, optimalHigh: 90 },
+          { label: "Optimal (Female)", gender: "female", optimalLow: 70, optimalHigh: 100 },
+          { label: "Normal (Male)", gender: "male", low: 45, high: 1000 },
+          { label: "Normal (Female)", gender: "female", low: 55, high: 1000 },
+        ],
+      },
     ],
   },
   {
@@ -187,12 +400,57 @@ export const BIOMARKER_DB: BiomarkerInfo[] = [
       { fromUnit: "mg/dL", factor: 1 },
       { fromUnit: "mg/dl", factor: 1 },
     ],
+    alternateUnits: [
+      { unit: "mmol/L", factor: 1 / 88.57, precision: 2 },
+    ],
     referenceRanges: [
       { label: "Optimal", gender: "all", optimalLow: 0, optimalHigh: 100 },
       { label: "Normal", gender: "all", low: 0, high: 150 },
       { label: "Borderline", gender: "all", low: 150, high: 199 },
       { label: "High", gender: "all", low: 200, high: 499 },
       { label: "Very High", gender: "all", criticalHigh: 500 },
+    ],
+    referenceSets: [
+      {
+        id: "clinical",
+        label: "Clinical Standard (ACC/AHA)",
+        description: "NCEP ATP III / ACC-AHA categories for fasting triglycerides.",
+        source: "NCEP ATP III, JAMA 2001; ACC/AHA 2019",
+        sourceUrl: "https://www.ahajournals.org/doi/10.1161/CIR.0000000000000625",
+        ranges: [
+          { label: "Optimal", gender: "all", optimalLow: 0, optimalHigh: 100 },
+          { label: "Normal", gender: "all", low: 0, high: 150 },
+          { label: "Borderline High", gender: "all", low: 150, high: 199 },
+          { label: "High", gender: "all", low: 200, high: 499 },
+          { label: "Very High", gender: "all", criticalHigh: 500 },
+        ],
+      },
+      {
+        id: "longevity",
+        label: "Optimal Longevity",
+        description: "Triglycerides <80 mg/dL associated with lowest insulin-resistance risk and smallest LDL particle size.",
+        source: "Muzio et al. Nutrients 2023; Krauss RM. Arteriosclerosis 1994",
+        ranges: [
+          { label: "Optimal", gender: "all", optimalLow: 0, optimalHigh: 80 },
+          { label: "Acceptable", gender: "all", low: 80, high: 119 },
+          { label: "Borderline", gender: "all", low: 120, high: 149 },
+          { label: "Elevated", gender: "all", low: 150, high: 299 },
+          { label: "Very High", gender: "all", criticalHigh: 300 },
+        ],
+      },
+      {
+        id: "athletic",
+        label: "Athletic / Active",
+        description: "Trained athletes typically have triglycerides well below 100 mg/dL due to high lipoprotein lipase activity.",
+        source: "Tran ZV et al. Medicine & Science in Sports & Exercise 1983",
+        ranges: [
+          { label: "Optimal", gender: "all", optimalLow: 0, optimalHigh: 70 },
+          { label: "Normal", gender: "all", low: 0, high: 110 },
+          { label: "Borderline", gender: "all", low: 110, high: 149 },
+          { label: "High", gender: "all", low: 150, high: 349 },
+          { label: "Very High", gender: "all", criticalHigh: 350 },
+        ],
+      },
     ],
   },
 

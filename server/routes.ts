@@ -60,6 +60,8 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         relevance: b.relevance,
         researchNotes: b.researchNotes,
         referenceRanges: b.referenceRanges,
+        referenceSets: b.referenceSets,
+        alternateUnits: b.alternateUnits,
       })),
       categories: CATEGORIES,
     });

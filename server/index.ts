@@ -4,6 +4,21 @@ import { serveStatic } from "./static";
 import { createServer } from "http";
 import { seedDemoData } from "./seed";
 
+// Choose storage backend based on DATABASE_URL
+if (process.env.DATABASE_URL) {
+  // Dynamically replace the exported storage with PgStorage
+  (async () => {
+    const { PgStorage } = await import("./db-storage");
+    const { setStorage } = await import("./storage-registry");
+    const pg = new PgStorage(process.env.DATABASE_URL!);
+    await pg.init();
+    setStorage(pg);
+    console.log("[db] Connected to PostgreSQL");
+  })().catch(e => {
+    console.error("[db] PostgreSQL connection failed, using in-memory storage:", e.message);
+  });
+}
+
 const app = express();
 const httpServer = createServer(app);
 

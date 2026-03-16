@@ -12,6 +12,7 @@ export interface IStorage {
   getBloodTests(profileId: number): Promise<BloodTest[]>;
   getBloodTest(id: number): Promise<BloodTest | undefined>;
   createBloodTest(test: InsertBloodTest): Promise<BloodTest>;
+  updateBloodTest(id: number, updates: Partial<InsertBloodTest>): Promise<BloodTest | undefined>;
   deleteBloodTest(id: number): Promise<boolean>;
 
   // Biomarker Results
@@ -19,26 +20,28 @@ export interface IStorage {
   getBiomarkerResultsByTest(bloodTestId: number): Promise<BiomarkerResult[]>;
   createBiomarkerResult(result: InsertBiomarkerResult): Promise<BiomarkerResult>;
   createBiomarkerResults(results: InsertBiomarkerResult[]): Promise<BiomarkerResult[]>;
+  updateBiomarkerResult(id: number, updates: { value?: number; unit?: string; flagStatus?: string | null }): Promise<BiomarkerResult | undefined>;
+  deleteBiomarkerResult(id: number): Promise<boolean>;
   deleteBiomarkerResultsByTest(bloodTestId: number): Promise<boolean>;
 }
 
 export class MemStorage implements IStorage {
-  private profiles: Map<number, Profile> = new Map();
-  private bloodTests: Map<number, BloodTest> = new Map();
-  private biomarkerResults: Map<number, BiomarkerResult> = new Map();
+  private _profiles: Map<number, Profile> = new Map();
+  private _bloodTests: Map<number, BloodTest> = new Map();
+  private _biomarkerResults: Map<number, BiomarkerResult> = new Map();
   private nextProfileId = 1;
   private nextTestId = 1;
   private nextResultId = 1;
 
   // Profiles
   async getProfiles(): Promise<Profile[]> {
-    return Array.from(this.profiles.values()).sort(
+    return Array.from(this._profiles.values()).sort(
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     );
   }
 
   async getProfile(id: number): Promise<Profile | undefined> {
-    return this.profiles.get(id);
+    return this._profiles.get(id);
   }
 
   async createProfile(profile: InsertProfile): Promise<Profile> {
@@ -49,27 +52,26 @@ export class MemStorage implements IStorage {
       ethnicity: profile.ethnicity ?? null,
       notes: profile.notes ?? null,
     };
-    this.profiles.set(newProfile.id, newProfile);
+    this._profiles.set(newProfile.id, newProfile);
     return newProfile;
   }
 
   async updateProfile(id: number, updates: Partial<InsertProfile>): Promise<Profile | undefined> {
-    const profile = this.profiles.get(id);
+    const profile = this._profiles.get(id);
     if (!profile) return undefined;
     const updated = { ...profile, ...updates };
-    this.profiles.set(id, updated);
+    this._profiles.set(id, updated);
     return updated;
   }
 
   async deleteProfile(id: number): Promise<boolean> {
-    if (!this.profiles.has(id)) return false;
-    this.profiles.delete(id);
-    // Cascade delete
-    for (const [testId, test] of this.bloodTests) {
+    if (!this._profiles.has(id)) return false;
+    this._profiles.delete(id);
+    for (const [testId, test] of this._bloodTests) {
       if (test.profileId === id) {
-        this.bloodTests.delete(testId);
-        for (const [rId, r] of this.biomarkerResults) {
-          if (r.bloodTestId === testId) this.biomarkerResults.delete(rId);
+        this._bloodTests.delete(testId);
+        for (const [rId, r] of this._biomarkerResults) {
+          if (r.bloodTestId === testId) this._biomarkerResults.delete(rId);
         }
       }
     }
@@ -78,13 +80,13 @@ export class MemStorage implements IStorage {
 
   // Blood Tests
   async getBloodTests(profileId: number): Promise<BloodTest[]> {
-    return Array.from(this.bloodTests.values())
+    return Array.from(this._bloodTests.values())
       .filter((t) => t.profileId === profileId)
       .sort((a, b) => b.testDate.localeCompare(a.testDate));
   }
 
   async getBloodTest(id: number): Promise<BloodTest | undefined> {
-    return this.bloodTests.get(id);
+    return this._bloodTests.get(id);
   }
 
   async createBloodTest(test: InsertBloodTest): Promise<BloodTest> {
@@ -97,28 +99,36 @@ export class MemStorage implements IStorage {
       rawText: test.rawText ?? null,
       fileName: test.fileName ?? null,
     };
-    this.bloodTests.set(newTest.id, newTest);
+    this._bloodTests.set(newTest.id, newTest);
     return newTest;
   }
 
+  async updateBloodTest(id: number, updates: Partial<InsertBloodTest>): Promise<BloodTest | undefined> {
+    const test = this._bloodTests.get(id);
+    if (!test) return undefined;
+    const updated = { ...test, ...updates };
+    this._bloodTests.set(id, updated);
+    return updated;
+  }
+
   async deleteBloodTest(id: number): Promise<boolean> {
-    if (!this.bloodTests.has(id)) return false;
-    this.bloodTests.delete(id);
-    for (const [rId, r] of this.biomarkerResults) {
-      if (r.bloodTestId === id) this.biomarkerResults.delete(rId);
+    if (!this._bloodTests.has(id)) return false;
+    this._bloodTests.delete(id);
+    for (const [rId, r] of this._biomarkerResults) {
+      if (r.bloodTestId === id) this._biomarkerResults.delete(rId);
     }
     return true;
   }
 
   // Biomarker Results
   async getBiomarkerResults(profileId: number): Promise<BiomarkerResult[]> {
-    return Array.from(this.biomarkerResults.values())
+    return Array.from(this._biomarkerResults.values())
       .filter((r) => r.profileId === profileId)
       .sort((a, b) => b.testDate.localeCompare(a.testDate));
   }
 
   async getBiomarkerResultsByTest(bloodTestId: number): Promise<BiomarkerResult[]> {
-    return Array.from(this.biomarkerResults.values()).filter((r) => r.bloodTestId === bloodTestId);
+    return Array.from(this._biomarkerResults.values()).filter((r) => r.bloodTestId === bloodTestId);
   }
 
   async createBiomarkerResult(result: InsertBiomarkerResult): Promise<BiomarkerResult> {
@@ -129,7 +139,7 @@ export class MemStorage implements IStorage {
       originalValue: result.originalValue ?? null,
       originalUnit: result.originalUnit ?? null,
     };
-    this.biomarkerResults.set(newResult.id, newResult);
+    this._biomarkerResults.set(newResult.id, newResult);
     return newResult;
   }
 
@@ -137,9 +147,23 @@ export class MemStorage implements IStorage {
     return Promise.all(results.map((r) => this.createBiomarkerResult(r)));
   }
 
+  async updateBiomarkerResult(id: number, updates: { value?: number; unit?: string; flagStatus?: string | null }): Promise<BiomarkerResult | undefined> {
+    const result = this._biomarkerResults.get(id);
+    if (!result) return undefined;
+    const updated = { ...result, ...updates };
+    this._biomarkerResults.set(id, updated);
+    return updated;
+  }
+
+  async deleteBiomarkerResult(id: number): Promise<boolean> {
+    if (!this._biomarkerResults.has(id)) return false;
+    this._biomarkerResults.delete(id);
+    return true;
+  }
+
   async deleteBiomarkerResultsByTest(bloodTestId: number): Promise<boolean> {
-    for (const [rId, r] of this.biomarkerResults) {
-      if (r.bloodTestId === bloodTestId) this.biomarkerResults.delete(rId);
+    for (const [rId, r] of this._biomarkerResults) {
+      if (r.bloodTestId === bloodTestId) this._biomarkerResults.delete(rId);
     }
     return true;
   }

@@ -128,8 +128,13 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       let pdfText = "";
       try {
         pdfText = await parsePdfBuffer(req.file.buffer);
-      } catch (e) {
-        return res.status(400).json({ error: "Failed to parse PDF. Please ensure it is a valid, text-based PDF." });
+      } catch (e: any) {
+        console.error("[upload] PDF parse error:", e?.message || e);
+        return res.status(400).json({ error: "Failed to parse PDF: " + (e?.message || "Unknown error") + ". Please ensure it is a valid, text-based PDF." });
+      }
+
+      if (!pdfText || pdfText.trim().length < 20) {
+        return res.status(400).json({ error: "PDF appears to be empty or image-based (scanned). Please use a text-based PDF exported from a lab system." });
       }
 
       // Extract metadata

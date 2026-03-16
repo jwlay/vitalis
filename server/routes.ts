@@ -654,7 +654,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
           const setId = refPrefs[key] || "clinical";
           const refSet = bm.referenceSets?.find(s => s.id === setId) || bm.referenceSets?.[0];
 
-          const cardH = bm.plainDescription ? 112 : 88;
+          const cardH = bm.plainDescription ? (refSet ? 130 : 95) : (refSet ? 105 : 72);
           if (doc.y > doc.page.height - cardH - 20) doc.addPage();
 
           const cardY = doc.y + 4;
@@ -677,7 +677,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
           // Trend
           if (history.length > 1) {
-            const trendStr = history.slice(-4).map(h => safeNum(h.value).toFixed(1)).join(" → ");
+            const trendStr = history.slice(-4).map(h => safeNum(h.value).toFixed(1)).join(" > ");
             doc.fill("#64748b").fontSize(8).font("Helvetica")
               .text(`Trend: ${trendStr} ${latest.unit || ""}`, col1 + 12, cardY + 28, { width: pageW - 24, align: "right", lineBreak: false });
           }
@@ -690,10 +690,20 @@ export async function registerRoutes(httpServer: Server, app: Express) {
 
           // Reference set info
           if (refSet) {
-            const refY = cardY + (bm.plainDescription ? 78 : 50);
-            const rangeText = refSet.ranges?.map((r: any) => `${r.label}: ${r.low != null ? r.low + "–" : "<"}${r.high ?? ""}`).slice(0, 3).join("  |  ") || "";
+            const refY = cardY + (bm.plainDescription ? 94 : 52);
+            const rangeText = refSet.ranges?.map((r: any) => {
+              // Determine lower bound
+              const lo = r.criticalLow ?? r.optimalLow ?? r.low;
+              // Determine upper bound
+              const hi = r.criticalHigh ?? r.optimalHigh ?? r.high;
+              if (lo != null && hi != null && hi < 9000) return `${r.label}: ${lo}–${hi}`;
+              if (lo != null && hi == null) return `${r.label}: >=${lo}`;
+              if (lo == null && hi != null && hi < 9000) return `${r.label}: <${hi}`;
+              if (lo != null && hi != null && hi >= 9000) return `${r.label}: >=${lo}`;  // high=1000 sentinel
+              return `${r.label}: —`;
+            }).slice(0, 4).join("  |  ") || "";
             doc.fill("#94a3b8").fontSize(7.5).font("Helvetica")
-              .text(`Ref: ${refSet.label} (${refSet.source})${rangeText ? "  ·  " + rangeText : ""}`, col1 + 12, refY, { width: pageW - 24, lineBreak: false });
+              .text(`Ref: ${refSet.label} · ${refSet.source}${rangeText ? "  |  " + rangeText : ""}`, col1 + 12, refY, { width: pageW - 24 });
           }
 
           doc.y = cardY + cardH + 4;
@@ -704,7 +714,7 @@ export async function registerRoutes(httpServer: Server, app: Express) {
       // ── RECOMMENDATIONS PAGE ──
       doc.addPage();
       doc.rect(0, 0, doc.page.width, 50).fill("#1e293b");
-      doc.fill("white").fontSize(16).font("Helvetica-Bold").text("Recommendations", col1, 17, { lineBreak: false });
+      doc.fill("white").fontSize(16).font("Helvetica-Bold").text("Recommendations & Risk Analysis", col1, 17, { lineBreak: false });
       doc.y = 68;
       doc.fill("#1e293b");
 
@@ -712,14 +722,102 @@ export async function registerRoutes(httpServer: Server, app: Express) {
         .map(([key, hist]) => ({ key, latest: hist[hist.length - 1], bm: biomarkerMap.get(key) }))
         .filter(({ latest }) => latest && ["low","high","critical_low","critical_high"].includes(latest.flagStatus || ""));
 
+      // ── CARDIOVASCULAR RISK ANALYSIS ──
+      // Compute derived risk metrics if we have the needed biomarkers
+      const latestByKey: Record<string, number> = {};
+      for (const [key, hist] of Object.entries(byBiomarker)) {
+        const last = hist[hist.length - 1];
+        if (last && last.value != null) latestByKey[key] = safeNum(last.value);
+      }
+      const totalChol = latestByKey["total_cholesterol"];
+      const hdl = latestByKey["hdl_cholesterol"];
+      const ldl = latestByKey["ldl_cholesterol"];
+      const tg = latestByKey["triglycerides"];
+      const apob = latestByKey["apolipoprotein_b"];
+
+      const hasCardioData = totalChol != null && hdl != null;
+      if (hasCardioData) {
+        const riskY = doc.y;
+        doc.roundedRect(col1, riskY, pageW, 22, 4).fill("#1e3a5f");
+        doc.fill("white").fontSize(11).font("Helvetica-Bold")
+          .text("Cardiovascular Risk Markers", col1 + 12, riskY + 6, { lineBreak: false });
+        doc.y = riskY + 30;
+        doc.fill("#1e293b");
+
+        const metrics: Array<{label: string, value: string, note: string, color: string}> = [];
+
+        // Non-HDL Cholesterol
+        if (totalChol != null && hdl != null) {
+          const nonHDL = totalChol - hdl;
+          const nonHDLColor = nonHDL < 130 ? "#10b981" : nonHDL < 160 ? "#f59e0b" : "#ef4444";
+          const nonHDLNote = nonHDL < 130 ? "Optimal (<130)" : nonHDL < 160 ? "Borderline (130-159)" : "Elevated (>=160)";
+          metrics.push({ label: "Non-HDL Cholesterol", value: `${nonHDL.toFixed(0)} mg/dL`, note: nonHDLNote, color: nonHDLColor });
+        }
+
+        // TG/HDL Ratio (insulin resistance proxy)
+        if (tg != null && hdl != null && hdl > 0) {
+          const tgHDL = tg / hdl;
+          const tgHDLColor = tgHDL < 2.0 ? "#10b981" : tgHDL < 3.5 ? "#f59e0b" : "#ef4444";
+          const tgHDLNote = tgHDL < 2.0 ? "Favorable (<2.0)" : tgHDL < 3.5 ? "Moderate (2.0-3.5)" : "Elevated (>3.5, suggests insulin resistance)";
+          metrics.push({ label: "TG / HDL Ratio", value: tgHDL.toFixed(2), note: tgHDLNote, color: tgHDLColor });
+        }
+
+        // Cholesterol / HDL ratio
+        if (totalChol != null && hdl != null && hdl > 0) {
+          const cholHDL = totalChol / hdl;
+          const cholHDLColor = cholHDL < 3.5 ? "#10b981" : cholHDL < 5.0 ? "#f59e0b" : "#ef4444";
+          const cholHDLNote = cholHDL < 3.5 ? "Low risk (<3.5)" : cholHDL < 5.0 ? "Moderate risk (3.5-5.0)" : "Elevated risk (>5.0)";
+          metrics.push({ label: "Total Chol / HDL Ratio", value: cholHDL.toFixed(2), note: cholHDLNote, color: cholHDLColor });
+        }
+
+        // ApoB risk category
+        if (apob != null) {
+          const apobColor = apob < 80 ? "#10b981" : apob < 100 ? "#f59e0b" : "#ef4444";
+          const apobNote = apob < 80 ? "Optimal (<80 mg/dL)" : apob < 100 ? "Acceptable (80-99 mg/dL)" : "Elevated (>=100 mg/dL)";
+          metrics.push({ label: "ApoB Risk Category", value: `${apob.toFixed(0)} mg/dL`, note: apobNote, color: apobColor });
+        }
+
+        const metricRowH = 30;
+        for (const m of metrics) {
+          if (doc.y > doc.page.height - 50) doc.addPage();
+          const mY = doc.y;
+          doc.roundedRect(col1, mY, pageW, metricRowH, 3).fill("#f8fafc");
+          // Colored indicator strip
+          doc.rect(col1, mY, 4, metricRowH).fill(m.color);
+          doc.fill("#1e293b").fontSize(10).font("Helvetica-Bold")
+            .text(m.label, col1 + 12, mY + 7, { lineBreak: false });
+          doc.fill(m.color).fontSize(10).font("Helvetica-Bold")
+            .text(m.value, col1 + 12, mY + 7, { width: pageW - 24, align: "right", lineBreak: false });
+          doc.fill("#64748b").fontSize(8).font("Helvetica")
+            .text(m.note, col1 + 12, mY + 19, { lineBreak: false });
+          doc.y = mY + metricRowH + 3;
+          doc.fill("#1e293b");
+        }
+        doc.y += 10;
+      }
+
+      // ── OUT-OF-RANGE MARKERS ──
+      if (needsAttention.length > 0) {
+        if (doc.y > doc.page.height - 80) doc.addPage();
+        const oorrY = doc.y;
+        doc.roundedRect(col1, oorrY, pageW, 22, 4).fill("#7f1d1d");
+        doc.fill("white").fontSize(11).font("Helvetica-Bold")
+          .text("Markers Requiring Attention", col1 + 12, oorrY + 6, { lineBreak: false });
+        doc.y = oorrY + 30;
+        doc.fill("#1e293b");
+      }
+
       if (needsAttention.length === 0) {
         const boxY = doc.y;
-        doc.roundedRect(col1, boxY, pageW, 60, 6).fill("#dcfce7");
-        doc.fill("#166534").fontSize(12).font("Helvetica-Bold")
-          .text("✓ All Biomarkers Within Normal Range", col1 + 15, boxY + 12, { lineBreak: false });
-        doc.fill("#166534").fontSize(10).font("Helvetica")
-          .text("Your latest results show no markers outside normal ranges. Keep up the great work!", col1 + 15, boxY + 32, { width: pageW - 30 });
-        doc.y = boxY + 68;
+        doc.roundedRect(col1, boxY, pageW, 75, 6).fill("#f0fdf4");
+        doc.rect(col1, boxY, 4, 75).fill("#10b981");
+        doc.fill("#166534").fontSize(11).font("Helvetica-Bold")
+          .text("No markers outside reference ranges in latest test", col1 + 15, boxY + 12, { lineBreak: false });
+        doc.fill("#374151").fontSize(9.5).font("Helvetica")
+          .text("All biomarkers in your latest test fall within the selected reference ranges. This is a positive finding, though reference ranges vary by guideline and individual context.", col1 + 15, boxY + 30, { width: pageW - 30 });
+        doc.fill("#64748b").fontSize(8.5).font("Helvetica")
+          .text("For a more comprehensive assessment — including cardiovascular risk stratification and longevity-focused targets — discuss these results with your physician.", col1 + 15, boxY + 50, { width: pageW - 30 });
+        doc.y = boxY + 83;
       } else {
         for (const { key, latest, bm } of needsAttention) {
           if (!bm || !latest) continue;

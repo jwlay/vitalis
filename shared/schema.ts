@@ -10,6 +10,8 @@ export const profiles = pgTable("profiles", {
   gender: text("gender").notNull(), // 'male' | 'female' | 'other'
   ethnicity: text("ethnicity"),
   notes: text("notes"),
+  // JSON object mapping biomarkerKey -> referenceSetId, e.g. { "glucose": "longevity", "ldl_cholesterol": "clinical" }
+  referencePreferences: text("reference_preferences"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

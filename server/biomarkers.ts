@@ -302,8 +302,8 @@ export const BIOMARKER_DB: BiomarkerInfo[] = [
     ],
     referenceRanges: [
       { label: "Optimal", gender: "all", optimalLow: 0, optimalHigh: 100 },
-      { label: "Near Optimal", gender: "all", low: 100, high: 129 },
-      { label: "Borderline", gender: "all", low: 130, high: 159 },
+      { label: "Near Optimal", gender: "all", high: 129 },
+      { label: "Borderline High", gender: "all", low: 130, high: 159 },
       { label: "High", gender: "all", low: 160, high: 189 },
       { label: "Very High", gender: "all", criticalHigh: 190 },
     ],
@@ -437,8 +437,8 @@ export const BIOMARKER_DB: BiomarkerInfo[] = [
     ],
     referenceRanges: [
       { label: "Optimal", gender: "all", optimalLow: 0, optimalHigh: 100 },
-      { label: "Normal", gender: "all", low: 0, high: 150 },
-      { label: "Borderline", gender: "all", low: 150, high: 199 },
+      { label: "Normal", gender: "all", high: 150 },
+      { label: "Borderline High", gender: "all", low: 150, high: 199 },
       { label: "High", gender: "all", low: 200, high: 499 },
       { label: "Very High", gender: "all", criticalHigh: 500 },
     ],
@@ -1271,7 +1271,7 @@ export const BIOMARKER_DB: BiomarkerInfo[] = [
     whyItMatters: "Low magnesium is surprisingly common and linked to muscle cramps, migraines, heart-rhythm problems, and insulin resistance. Standard blood tests can miss mild deficiency because most magnesium is inside cells.",
     bodySystem: "Vitamins & Minerals",
     referenceLinks: [{ label: "NIH: Magnesium Fact Sheet", url: "https://ods.od.nih.gov/factsheets/Magnesium-HealthProfessional/" }],
-    aliases: ["magnesium", "mg", "serum magnesium", "mg2+"],
+    aliases: ["magnesium", "serum magnesium", "magnesium level", "Mg serum", "magnésium"],
     unitConversions: [
       { fromUnit: "mg/dL", factor: 1 },
       { fromUnit: "mmol/L", factor: 2.43 },
@@ -1590,7 +1590,7 @@ export const BIOMARKER_DB: BiomarkerInfo[] = [
       { fromUnit: "g/L", factor: 100 },
     ],
     referenceRanges: [
-      { label: "Desirable", gender: "all", low: 0, high: 90 },
+      { label: "Desirable", gender: "all", high: 90 },
       { label: "Optimal", gender: "all", optimalLow: 40, optimalHigh: 80 },
       { label: "Borderline High", gender: "all", low: 90, high: 120 },
       { label: "High Risk", gender: "all", criticalHigh: 130 },
@@ -1692,21 +1692,67 @@ export function getFlagStatus(
     return true;
   });
 
+  // Elevated-tier labels — ranges with these labels represent OUT-OF-NORMAL zones
+  // Values in these ranges should be flagged "high" not "normal"
+  const ELEVATED_LABELS = /\b(high|risk|elevated|borderline|prediabetes|poor|excessive|excessive)\b/i;
+  const isElevatedRange = (r: ReferenceRange) =>
+    r.label ? ELEVATED_LABELS.test(r.label) : false;
+
+  // Step 1: Critical boundaries take absolute priority
   for (const range of ranges) {
     if (range.criticalLow !== undefined && value < range.criticalLow) return "critical_low";
     if (range.criticalHigh !== undefined && value > range.criticalHigh) return "critical_high";
   }
 
+  // Step 2: Check optimal zone
   for (const range of ranges) {
     if (range.optimalLow !== undefined && range.optimalHigh !== undefined) {
       if (value >= range.optimalLow && value <= range.optimalHigh) return "optimal";
     }
   }
 
+  // Step 3: Check fully-bounded NORMAL ranges (both low and high, not elevated)
   for (const range of ranges) {
-    if (range.low !== undefined && value < range.low) return "low";
-    if (range.high !== undefined && value > range.high) return "high";
+    if (range.low !== undefined && range.high !== undefined && !isElevatedRange(range)) {
+      if (value >= range.low && value <= range.high) return "normal";
+    }
   }
+
+  // Step 3b: Check one-sided upper-bound NORMAL ranges (high only, no low)
+  for (const range of ranges) {
+    if (range.high !== undefined && range.low === undefined &&
+        range.criticalHigh === undefined && !isElevatedRange(range)) {
+      if (value <= range.high) return "normal";
+    }
+  }
+
+  // Step 4: Check if value falls in an elevated tier (flag as "high")
+  for (const range of ranges) {
+    if (isElevatedRange(range)) {
+      if (range.low !== undefined && range.high !== undefined && value >= range.low && value <= range.high) return "high";
+      if (range.low !== undefined && range.high === undefined && value >= range.low) return "high";
+      if (range.high !== undefined && range.low === undefined && value <= range.high) return "high";
+    }
+  }
+
+  // Step 5: Fallback — determine if value is above or below all normal bounds
+  // Find max "normal" upper bound
+  let maxNormal: number | undefined;
+  for (const range of ranges) {
+    if (range.high !== undefined && !isElevatedRange(range) && range.criticalHigh === undefined) {
+      if (maxNormal === undefined || range.high > maxNormal) maxNormal = range.high;
+    }
+  }
+  if (maxNormal !== undefined && value > maxNormal) return "high";
+
+  // Find min "normal" lower bound from fully-bounded ranges only
+  let minNormal: number | undefined;
+  for (const range of ranges) {
+    if (range.low !== undefined && range.high !== undefined && !isElevatedRange(range)) {
+      if (minNormal === undefined || range.low < minNormal) minNormal = range.low;
+    }
+  }
+  if (minNormal !== undefined && value < minNormal) return "low";
 
   return "normal";
 }
@@ -1730,9 +1776,9 @@ function looksLikeUnit(tok: string): boolean {
   return false;
 }
 
-/** Return true if tok is a pure number (allows comma as decimal separator) */
+/** Return true if tok is a pure number (allows comma as decimal separator, includes unicode minus/dash prefix) */
 function isNumericToken(tok: string): boolean {
-  return /^-?\d+([.,]\d+)?$/.test(tok);
+  return /^[\-\u2013\u2014]?\d+([.,]\d+)?$/.test(tok);
 }
 
 /**
@@ -1775,8 +1821,16 @@ function scorePair(
   if (unit && looksLikeUnit(unit)) score += 3;
   if (!unit) score -= 2; // prefer values with units
 
+  // Require at least a unit match OR a high-confidence plausible match
+  // Score of 8 (exactUnit + plausible) is needed without unit from a different context
+  // Without exact unit match, require plausibility AND unit looks reasonable  
+  if (!exactUnitMatch && unit && looksLikeUnit(unit)) {
+    // Has a unit but it doesn't match — only allow if biomarker has no preferred unit
+    if (biomarker.unitConversions.length > 0) score -= 5;
+  }
+
   // Negative score means very unlikely
-  return score >= 3 ? score : null;
+  return score >= 5 ? score : null;
 }
 
 /** Find all alias matches in a string, returning set of biomarker keys */
@@ -1863,9 +1917,12 @@ export function parsePdfText(text: string): Array<{
     // Detect "reference range only" lines: "Name [H/L] unit N1 - N2" with no tab and no actual value
     // Key: the line has ONLY 2 numeric tokens which form the reference range (no isolated measured value)
     // Example: "SGPT U/L 0 - 50" (only 0 and 50) vs "Hemoglobin 15.1 g/dL 13.5 – 17.5" (15.1, 13.5, 17.5 = 3 tokens)
-    const allNumericTokens = raw.split(/\s+/).filter(t => /^-?\d+([.,]\d+)?$/.test(t));
-    const endsWithRange = /\d+[.,]?\d*\s*[-–]\s*\d+[.,]?\d*\s*$/.test(raw.trim());
+    // Count ALL numeric-like tokens including those preceded by unicode dash (–) or en-dash
+    // unicode dash (–) is codepoint U+2013 and is NOT matched by /^-?\d+/ leading to under-counting
+    const allNumericTokens = raw.split(/\s+/).filter(t => /^[\-\u2013\u2014]?\d+([.,]\d+)?$/.test(t));
+    const endsWithRange = /\d+[.,]?\d*\s*[\-\u2013\u2014]\s*\d+[.,]?\d*\s*$/.test(raw.trim());
     // isRefRangeLine: no tab, ends with range, and has at most 2 numeric tokens (only the range values)
+    // BUT: if there are 3+ numeric tokens, the first one is the measurement value  
     const isRefRangeLine = tabIdx === -1 && endsWithRange && allNumericTokens.length <= 2;
 
     if (tabIdx !== -1) {

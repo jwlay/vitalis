@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation, useParams } from "wouter";
 import { apiRequest } from "@/lib/queryClient";
@@ -448,17 +448,21 @@ function BiomarkerExplainer({ biomarker }: { biomarker: BiomarkerInfo }) {
 
 // ===== BIOMARKER CARD =====
 function BiomarkerCard({
-  biomarkerKey, history, biomarkerInfo, gender,
+  biomarkerKey, history, biomarkerInfo, gender, profileRefPrefs, onRefSetChange,
 }: {
   biomarkerKey: string;
   history: AnalyticsData["byBiomarker"][string];
   biomarkerInfo: BiomarkerInfo | undefined;
   gender?: string;
+  profileRefPrefs?: Record<string, string>;
+  onRefSetChange?: (biomarkerKey: string, setId: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [chartType, setChartType] = useState<"line" | "bar" | "area">("area");
   const [showExplanation, setShowExplanation] = useState(false);
-  const defaultSetId = biomarkerInfo?.referenceSets?.[0]?.id ?? "default";
+  // Use saved preference from profile, fall back to first available set
+  const savedSetId = profileRefPrefs?.[biomarkerKey];
+  const defaultSetId = savedSetId || (biomarkerInfo?.referenceSets?.[0]?.id ?? "default");
   const [activeSetId, setActiveSetId] = useState<string>(defaultSetId);
   const [useAltUnit, setUseAltUnit] = useState(false);
 
@@ -608,16 +612,34 @@ function BiomarkerCard({
               {biomarkerInfo.referenceSets && biomarkerInfo.referenceSets.length > 0 && (
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-muted-foreground font-medium whitespace-nowrap">Reference:</span>
-                  <Select value={activeSetId} onValueChange={setActiveSetId}>
+                  <Select value={activeSetId} onValueChange={(val) => {
+                    setActiveSetId(val);
+                    onRefSetChange?.(biomarkerKey, val);
+                  }}>
                     <SelectTrigger className="h-7 text-xs w-52" data-testid={`select-refset-${biomarkerKey}`}>
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
                       {biomarkerInfo.referenceSets.map(s => (
-                        <SelectItem key={s.id} value={s.id} className="text-xs">{s.label}</SelectItem>
+                        <SelectItem key={s.id} value={s.id} className="text-xs">
+                          <div className="flex flex-col gap-0.5">
+                            <span className="font-medium">{s.label}</span>
+                            <span className="text-muted-foreground text-[10px] leading-tight whitespace-normal max-w-52">{s.description}</span>
+                          </div>
+                        </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
+                  {/* Show description of active reference set */}
+                  {activeSet && (
+                    <div className="mt-1 text-[10px] text-muted-foreground leading-tight max-w-xs">
+                      <span className="font-medium text-foreground/70">{activeSet.label}:</span> {activeSet.description}
+                      {activeSet.sourceUrl ? (
+                        <a href={activeSet.sourceUrl} target="_blank" rel="noopener noreferrer"
+                          className="ml-1 text-primary underline-offset-2 hover:underline">[source]</a>
+                      ) : null}
+                    </div>
+                  )}
                 </div>
               )}
               {altUnit && (
@@ -631,7 +653,7 @@ function BiomarkerCard({
                   data-testid={`button-unit-toggle-${biomarkerKey}`}
                 >
                   <ArrowUpDown size={11} />
-                  {useAltUnit ? displayUnit : altUnit.unit}
+                  {useAltUnit ? biomarkerInfo.canonicalUnit : altUnit.unit}
                 </button>
               )}
             </div>
@@ -1349,6 +1371,34 @@ export default function ProfilePage() {
   const optimalCount = flagCounts.optimal || 0;
   const normalCount = flagCounts.normal || 0;
 
+  // Reference set preferences - loaded from profile, updated on change
+  const [refPrefs, setRefPrefs] = useState<Record<string, string>>(() => {
+    try {
+      return profile?.referencePreferences ? JSON.parse(profile.referencePreferences as string) : {};
+    } catch { return {}; }
+  });
+
+  // Sync refPrefs when profile loads
+  useEffect(() => {
+    if (profile?.referencePreferences) {
+      try { setRefPrefs(JSON.parse(profile.referencePreferences as string)); } catch {}
+    }
+  }, [profile?.referencePreferences]);
+
+  const handleRefSetChange = async (biomarkerKey: string, setId: string) => {
+    const newPrefs = { ...refPrefs, [biomarkerKey]: setId };
+    setRefPrefs(newPrefs);
+    // Save to profile
+    try {
+      await apiRequest("PATCH", `/api/profiles/${profileId}`, {
+        referencePreferences: JSON.stringify(newPrefs),
+      });
+      qc.invalidateQueries({ queryKey: ["/api/profiles", profileId] });
+    } catch (e) {
+      console.warn("Failed to save reference preference", e);
+    }
+  };
+
   const handleExportExcel = () => {
     const url = `/api/profiles/${profileId}/export`;
     const a = document.createElement("a");
@@ -1358,6 +1408,17 @@ export default function ProfilePage() {
     a.click();
     document.body.removeChild(a);
     toast({ title: "Exporting...", description: "Your Excel file is being prepared." });
+  };
+
+  const handleExportPDF = () => {
+    const url = `/api/profiles/${profileId}/export.pdf`;
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `vitalis-report.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    toast({ title: "Generating PDF...", description: "Your health report is being prepared." });
   };
 
   if (!profile) {
@@ -1390,15 +1451,26 @@ export default function ProfilePage() {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <button
-              onClick={handleExportExcel}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-xs font-medium hover:bg-muted transition-colors"
-              title="Export all data to Excel"
-              data-testid="button-export-excel"
-            >
-              <Download size={14} />
-              Export
-            </button>
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={handleExportExcel}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-xs font-medium hover:bg-muted transition-colors"
+                title="Export all data to Excel"
+                data-testid="button-export-excel"
+              >
+                <Download size={14} />
+                Excel
+              </button>
+              <button
+                onClick={handleExportPDF}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-primary/40 text-xs font-medium hover:bg-primary/10 text-primary transition-colors"
+                title="Export full PDF health report"
+                data-testid="button-export-pdf"
+              >
+                <FileText size={14} />
+                PDF Report
+              </button>
+            </div>
             {biomarkerData && (
               <ManualEntryModal profileId={profileId} biomarkerDb={biomarkerData.biomarkers} onSuccess={() => qc.invalidateQueries({ queryKey: ["/api/profiles", profileId, "analytics"] })} />
             )}
@@ -1685,6 +1757,8 @@ export default function ProfilePage() {
                         history={history}
                         biomarkerInfo={biomarkerMap.get(key)}
                         gender={profile?.gender}
+                        profileRefPrefs={refPrefs}
+                        onRefSetChange={handleRefSetChange}
                       />
                     ))
                   )}
